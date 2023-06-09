@@ -35,7 +35,7 @@ def convert_to_df(coco):
             "image_id": int(img_id),
             "src_set_image_id": int(img_id), # repeat id to reference after join
             "coco_url": url,
-            "path": img_fname,  # TODO: insert true path to image file
+            "path": "labeled-data/dummy-video/" + img_fname,
             "width": int(w),
             "height": int(h)
         })
@@ -148,9 +148,15 @@ def prepare_coco(df_train, df_val):
     return df_train, df_val
 
 
+def save_coco(df_train, df_val):
+    df_train.to_hdf("coco2017_train.h5", key="df", mode="w")
+    df_val.to_hdf("coco2017_val.h5", key="df", mode="w")
+
+
 if __name__ == "__main__":
 
     df_train, df_val = load_coco()
     df_train, df_val = prepare_coco(df_train, df_val)
+    save_coco(df_train, df_val)
 
     print("Preprocessing complete.")
