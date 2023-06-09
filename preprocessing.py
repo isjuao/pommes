@@ -149,14 +149,32 @@ def prepare_coco(df_train, df_val):
 
 
 def save_coco(df_train, df_val):
+    """Saves the annotation DataFrames as separate .h5 files."""
+
     df_train.to_hdf("coco2017_train.h5", key="df", mode="w")
     df_val.to_hdf("coco2017_val.h5", key="df", mode="w")
+
+
+def merge_coco_sets(df_train, df_val):
+    """
+        Takes pre-created annotation DataFrames and merges them, adding an attribute to specify if an image belongs to
+        the train or validation set, before saving it as a new .h5 file.
+    """
+
+    df_train["istrain"] = [True for _ in range(len(df_train))]
+    df_val["istrain"] = [False for _ in range(len(df_val))]
+
+    # Merge and sort DataFrame
+    df_all = pd.concat([df_train, df_val]).sort_index()
+
+    df_all.to_hdf("coco2017_all.h5", key="df", mode="w")
 
 
 if __name__ == "__main__":
 
     df_train, df_val = load_coco()
     df_train, df_val = prepare_coco(df_train, df_val)
-    save_coco(df_train, df_val)
+    # save_coco(df_train, df_val)
+    merge_coco_sets(df_train, df_val)
 
     print("Preprocessing complete.")
