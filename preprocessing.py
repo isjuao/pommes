@@ -148,11 +148,25 @@ def prepare_coco(df_train, df_val):
     return df_train, df_val
 
 
-def save_coco(df_train, df_val):
+def save_coco(df_train, df_val, split_val):
     """Saves the annotation DataFrames as separate .h5 files."""
 
     df_train.to_hdf("coco2017_train.h5", key="df", mode="w")
-    df_val.to_hdf("coco2017_val.h5", key="df", mode="w")
+
+    if split_val:
+        """Request to split validation file, e.g. to hold out one half for downstream evaluation."""
+
+        df_val0 = df_val.sample(frac=0.5)
+        df_val1 = df_val.drop(df_val0.index)
+
+        df_val0.to_hdf("coco2017_val.h5", key="df", mode="w")
+        df_val1.to_hdf("coco2017_val-test.h5", key="df", mode="w")
+
+        return df_train, df_val0
+    else:
+        df_val.to_hdf("coco2017_val.h5", key="df", mode="w")
+
+        return df_train, df_val
 
 
 def merge_coco_sets(df_train, df_val):
@@ -174,7 +188,7 @@ if __name__ == "__main__":
 
     df_train, df_val = load_coco()
     df_train, df_val = prepare_coco(df_train, df_val)
-    # save_coco(df_train, df_val)
+    df_train, df_val = save_coco(df_train, df_val, True)
     merge_coco_sets(df_train, df_val)
 
     print("Preprocessing complete.")
