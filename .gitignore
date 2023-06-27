@@ -1,0 +1,8 @@
+.idea/
+*.zip
+.ipynb_checkpoints/
+__MACOSX/
+DLC_examples/
+first-dlc-project/
+annotations_trainval2017/
+annotations_trainval2014/
