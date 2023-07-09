@@ -3,7 +3,7 @@ COCO data preprocessing in order to be used as pre-labeled training data for Dee
 Large parts of the code were adapted from: https://github.com/robertklee/COCO-Human-Pose.git
 """
 import json
-
+import numpy as np
 from pycocotools.coco import COCO
 import pandas as pd
 
@@ -88,7 +88,7 @@ def load_coco():
     return df_train, df_val
 
 
-def filter_df(df_org):
+def filter_df_coco(df_org):
     """Filters the annotation Dataframe according to set requirements."""
 
     # Single-human images: for now, we disregard multi-person images instead of cropping them
@@ -138,8 +138,8 @@ def prepare_coco(df_train, df_val):
     """Step-by-step preprocessing after data loading."""
 
     # Filtering
-    df_train = filter_df(df_train)
-    df_val = filter_df(df_val)
+    df_train = filter_df_coco(df_train)
+    df_val = filter_df_coco(df_val)
 
     # (Re-)arranging
     df_train = rearrange_df(df_train)
@@ -184,11 +184,79 @@ def merge_coco_sets(df_train, df_val):
     df_all.to_hdf("coco2017_all.h5", key="df", mode="w")
 
 
-if __name__ == "__main__":
+def filter_df_mac(df):
+    """TBD"""
 
-    df_train, df_val = load_coco()
-    df_train, df_val = prepare_coco(df_train, df_val)
-    df_train, df_val = save_coco(df_train, df_val, True)
-    merge_coco_sets(df_train, df_val)
+    df["kp"] = df.apply(lambda row: json.loads(row["keypoints"]), axis=1)
+
+    # Single-animal only
+    def is_multi_animal(row):
+        if len(row["kp"]) > 1:
+            return 1
+        else:
+            return 0
+
+    multi = list(df.apply(is_multi_animal, axis=1))
+    mask = [bool(not val) for val in multi]
+
+    df = df[mask]
+
+    # # At least 5 keypoints ?
+    # df_filtered = df_filtered[df_filtered["num_keypoints"] > 4]
+
+    return df
+
+
+def prepare_macaquepose_valset():
+    # TODO: Implement routine to get validation subset from MacaquePose annotations
+
+    # Load MacaquePose annotations and fix naming error
+    df_all = pd.read_csv("annotations.csv")\
+        .rename({"keypoinbts": "keypoints"}, axis=1)\
+        .drop(columns="segmentation")
+
+    # Apply filter
+    df_single = filter_df_mac(df_all)
+
+    # Stretch to get keypoints
+    df = df_single.explode(column="kp")\
+        .explode(column="kp")\
+        .reset_index()  # double explode because of nested list
+    df = df.join(pd.json_normalize(df.pop("kp")))
+    df["bodyparts"] = df.apply(lambda row: row["name"].replace(" ", "_"), axis=1)
+    df = df.drop(["name"], axis=1)
+
+    # Coordinates into tuples
+    df["position"] = df.apply(lambda row: tuple(row["position"]) if row["position"] is not None else (0, 0), axis=1)
+
+    # TODO: How to deal with non-present keypoints? (Right now make 0, but how evaluation?)
+
+    return df
+    print("TBD")
+
+
+def save_val_macaque(df):
+    """Save subset of MacaquePose to serve as validation set."""
+
+    # Create subset
+    np.random.seed(42)
+    subset = [np.random.randint(0, max(df["index"]) + 1) for _ in range(0, 779)]
+    df_val = df[df["index"].isin(subset)]
+
+    # Save to .h5 file
+    df_val.to_hdf("macaque_val.h5", key="df", mode="w")
+
+
+if __name__ == "__main__":
+    dataset = "macaque"
+
+    if dataset == "coco":
+        df_train, df_val = load_coco()
+        df_train, df_val = prepare_coco(df_train, df_val)
+        df_train, df_val = save_coco(df_train, df_val, True)
+        merge_coco_sets(df_train, df_val)
+    elif dataset == "macaque":
+        df = prepare_macaquepose_valset()
+        save_val_macaque(df)
 
     print("Preprocessing complete.")
