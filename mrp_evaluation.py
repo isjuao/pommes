@@ -7,49 +7,20 @@
 """
 
 
-import deeplabcut as dlc
-import tensorflow as tf
 import numpy as np
 import datetime
-import argparse
 import pandas as pd
 from pathlib import Path
 import pingouin as pg
-from sklearn.metrics import mean_squared_error
 from scipy.spatial.distance import euclidean
+import matplotlib.pyplot as plt
+from sklearn import metrics
 
-
-parser = argparse.ArgumentParser()
-parser.add_argument("-p", "--project", help="Specify name of DLC project", required=True)
-args = parser.parse_args()
 
 print("~~~~~~~~~~~~~~~~~~~~~~~")
 print(f"{datetime.datetime.now().strftime('%Y-%m-%d [ %H:%M:%S ]')}")
 print(" Evaluating model ...")
 print("~~~~~~~~~~~~~~~~~~~~~~~")
-
-# dlc.evaluate_network(
-#     args.project + "/config.yaml",
-#     # comparisonbodyparts="all",
-#     # rescale=False,
-#     gputouse=0,
-#     # trainingsetindex=0,
-# )
-
-# def pred():
-#     print("TBD")
-#     # TODO: set up "own" prediction
-#     # model_folder = "/path/to/model/folder"
-#     # net_type = "resnet_50"
-#     # sess, inputs, outputs = dlc.pose_estimation_tensorflow.nnets.net.load_model(model_folder, net_type)
-#     # tf.compat.v1.reset_default_graph?
-#
-#     sess = tf.compat.v1.Session()
-#     saver = tf.compat.v1.train.import_meta_graph("TBD.meta")
-#     saver.restore(sess, tf.train.latest_checkpoint('./'))
-#
-#     # DLC: MAE; which is proportional to the average root mean square error?
-#     # PCK calculation is just a low-pass filter with arbitrary distance threshold
 
 
 def get_ground_truth(path):
@@ -66,7 +37,7 @@ def get_ground_truth(path):
 def stack_and_filter_dfs(df_ground: pd.DataFrame, df_pred: pd.DataFrame):
     """Stacks DataFrames into longer format and filters predictions for keypoint according to likelihood cutoff."""
 
-    pcutoff = 0.6   # TODO: likelihood cutoff from config.yaml
+    pcutoff = 0.4   # like in MacaquePose paper TODO: or change to likelihood cutoff from config.yaml
 
     # Stack DataFrames
     df_p_stacked = df_pred.stack(level="bodyparts").reset_index(level="bodyparts").reset_index()
@@ -75,7 +46,7 @@ def stack_and_filter_dfs(df_ground: pd.DataFrame, df_pred: pd.DataFrame):
     # Drop "unsure" predictions
     # TODO: do predictions that are sure but the keypoint does not exist in truth stay?
     df_p_stacked = df_p_stacked[df_p_stacked["likelihood"] >= pcutoff].drop("likelihood", axis=1)
-    print(f"Bodyparts that are predicted with confidence and thus considered for ICC: "
+    print(f"Bodyparts that are predicted with confidence and thus considered: "
           f"{df_p_stacked['bodyparts'].unique()}")
 
     return df_g_stacked, df_p_stacked
@@ -96,7 +67,7 @@ def rmse(df_g_stacked: pd.DataFrame, df_p_stacked: pd.DataFrame):
         # rmse_y = mean_squared_error(y_true=df_group["y_truth"], y_pred=df_group["y_pred"], squared=False)
         # return pd.Series(data=[rmse_x, rmse_y], index=["RMSE_x", "RMSE_y"])
 
-        # Calculate euclidean distance for each pair of truth/prediction
+        # Calculate Euclidean distance for each pair of truth/prediction
         df_group["eucl"] = df_group.apply(
             lambda row: euclidean([row["x_pred"], row["y_pred"]], [row["x_truth"], row["y_truth"]]), axis=1
         )
@@ -148,44 +119,75 @@ def icc(df_g_stacked: pd.DataFrame, df_p_stacked: pd.DataFrame):
     return res
 
 
-def eval(is_coco):
+def conf_matrix(df_g_stacked: pd.DataFrame, df_p_stacked_lh: pd.DataFrame, pcutoff: int):
+    """Calculates the confusion matrix based on the pcutoff."""
+
+    # Define positive predictions (.set_index(["index", "bodyparts"]))
+    df_p_pos = df_p_stacked_lh[df_p_stacked_lh["likelihood"] > pcutoff]
+    mask_p = df_p_stacked_lh.index.isin(df_p_pos.index.to_list())
+    df_p_stacked_lh["pos"] = mask_p
+
+    # Define positive ground truth (.set_index(["index", "bodyparts"]))
+    df_g_pos = df_g_stacked[(df_g_stacked["x"] != 0) | (df_g_stacked["y"] != 0)]
+    mask_g = df_g_stacked.index.isin(df_g_pos.index.to_list())
+    df_g_stacked["pos"] = mask_g
+
+    df_both = pd.merge(df_p_stacked_lh[["index", "bodyparts", "pos", "likelihood"]],
+                       df_g_stacked[["index", "bodyparts", "pos"]],
+                         on=["index", "bodyparts"],
+                         how="inner", suffixes=("_p", "_g"))
+
+    tp = len(df_both[(df_both["pos_p"]) & (df_both["pos_g"])])
+    fp = len(df_both[(df_both["pos_p"]) & (df_both["pos_g"] == False)])
+    fn = len(df_both[(df_both["pos_p"] == False) & (df_both["pos_g"])])
+    tn = len(df_both[(df_both["pos_p"] == False) & (df_both["pos_g"] == False)])
+
+    cm = [tn, fp, fn, tp]
+    return cm
+
+
+def eval(is_coco, is_baseline):
     """
-        This function assumes we have the predictions. #TODO: either using dlc or tf
+        This function assumes predictions generated through DeepLabCut (e.g. evaluate_network).
         Using ground truth and prediction data, we can define our own evaluation.
     """
 
-    # Get predictions # TODO: hardcode for now
+    # Get predictions - hardcode for now
 
-    df_p = pd.read_hdf("evaluation/DLC_resnet50_mrpJun23shuffle1_10000-snapshot-10000.h5")
-        # parse_ground_truth_data_file?
+    if is_coco:
+        # df_p = pd.read_hdf("evaluation/DLC_resnet50_mrpJun23shuffle1_10000-snapshot-10000.h5")
+        pred_file_name = "DLC_resnet50_mrpbaseJul19shuffle1_1030000-snapshot-1030000_coco.h5"
+    else:
+        pred_file_name = "DLC_resnet50_mrpbaseJul19shuffle1_1030000-snapshot-1030000_macaque.h5"
+    df_p = pd.read_hdf(f"evaluation/{pred_file_name}")
+    #     # parse_grounod_truth_data_file?
+    # if pred_file_name == "val2017_subsetDLC_resnet50_mrpbaseJul13shuffle1_1030000.h5":
+    #     df_p.index = "labeled-data/dummy-video/" + df_p.index
+
+    # Flatten columns and index (image file paths)
     df_p.columns = df_p.columns.droplevel(level="scorer")
-    # Flatten index (image file paths)
-    images = []
-    for tup in df_p.index.to_flat_index():
-        images.append("/".join(tup))
-    df_p.index = images
+    if isinstance(df_p.index, pd.MultiIndex):
+        images = []
+        for tup in df_p.index.to_flat_index():
+            images.append("/".join(tup))
+        df_p.index = images
 
     # Stack predictions DataFrame into longer format
     df_p_stacked = df_p.stack(level="bodyparts").reset_index(level="bodyparts").reset_index()
-
-    # Drop "unsure" predictions according to likelihood cutoff
-    pcutoff = 0.6  # TODO: likelihood cutoff from config.yaml
-    # TODO: do predictions that are sure but the keypoint does not exist in truth stay?
-    df_p_stacked = df_p_stacked[df_p_stacked["likelihood"] >= pcutoff].drop("likelihood", axis=1)
-    print(f"Bodyparts that are predicted with confidence and thus considered for ICC: "
-          f"{df_p_stacked['bodyparts'].unique()}")
 
     # Get ground truth data
 
     if is_coco:
         """Handle COCO ground truth data"""
 
-        ground_truth_path = Path("coco2017_all.h5")
-        assert ground_truth_path.is_file()
-        df_g = pd.read_hdf(ground_truth_path)
+        # ground_truth_file = "coco2017_all.h5"
+        ground_truth_file = "coco2017_val-test.h5"       # << TODO: use
+        assert Path(ground_truth_file).is_file()
+        df_g = pd.read_hdf(ground_truth_file)
 
-        # Get rid of indication column and adjust column index
-        df_g = df_g.drop("istrain", axis=1, level=0)
+        if ground_truth_file == "coco2017_all.h5":
+            # Get rid of indication column and adjust column index
+            df_g = df_g.drop("istrain", axis=1, level=0)
         df_g.columns = df_g.columns.droplevel(level="scorer")
 
         # Stack DataFrame into longer format
@@ -196,19 +198,33 @@ def eval(is_coco):
         ground_truth_path = Path("macaque_val.h5")
         assert ground_truth_path.is_file()
         df_g = pd.read_hdf(ground_truth_path)
+        df_g["image file name"] = "labeled-data/dummy-video/" + df_g["image file name"]
 
         # Split positions column and rename
         df_g["x"] = df_g.apply(lambda row: row["position"][0], axis=1)
         df_g["y"] = df_g.apply(lambda row: row["position"][1], axis=1)
-        df_g_stacked = df_g.drop(["index", "position", "keypoints"], axis=1)\
+        df_g_stacked = df_g.drop(["index", "position"], axis=1)\
             .rename({"image file name": "index"}, axis=1)
+    
+    # Get rid of images that do not contain both upper limbs, only evaluate on rest
+    upper_limb_missing = df_g_stacked[
+        df_g_stacked["bodyparts"].isin([
+            "left_shoulder", "right_shoulder", "left_elbow", "right_elbow", "left_wrist", "right_wrist"
+        ]) & (
+                (df_g_stacked["x"] == 0) | (df_g_stacked["y"] == 0)
+        )]["index"].unique().tolist()
 
-    # Only for debug
-    if is_coco:
-        df_g_stacked.to_csv("out_df-g-stacked_coco.csv", index=False)
-    else:
-        df_g_stacked.to_csv("out_df-g-stacked_mac.csv", index=False)
-    df_p_stacked.to_csv("out_df-p-stacked.csv", index=False)
+    df_g_stacked = df_g_stacked[~df_g_stacked["index"].isin(upper_limb_missing)]
+    df_p_stacked = df_p_stacked[~df_p_stacked["index"].isin(upper_limb_missing)]
+
+    pcutoff = 0.1
+    cm = conf_matrix(df_g_stacked, df_p_stacked, pcutoff)   # TODO: plot?
+
+    # # Drop "unsure" predictions according to likelihood cutoff
+    # # (= 0.6, from pre-trained config.yaml, or 0.4, from MacaquePose paper)
+    # df_p_stacked = df_p_stacked[df_p_stacked["likelihood"] >= pcutoff]
+    # print(f"Bodyparts that are predicted with confidence -> are considered: {df_p_stacked['bodyparts'].unique()}")
+    df_p_stacked = df_p_stacked.drop("likelihood", axis=1)
 
     # Calculate Metrics
 
@@ -237,7 +253,10 @@ def eval(is_coco):
 
 # Set ground truth
 is_coco = True
-eval(is_coco)
+# Set prediction scorer name
+is_baseline = True
+
+eval(is_coco, is_baseline)
 
 print("~~~~~~~~~~~~~~~~~~~~~~~")
 print(f"{datetime.datetime.now().strftime('%Y-%m-%d [ %H:%M:%S ]')}")
