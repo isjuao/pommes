@@ -95,8 +95,8 @@ def filter_df_coco(df_org):
     dups = df_org["src_set_image_id"].duplicated(keep=False)
     df_filtered = df_org[~dups]
 
-    # At least 5 keypoints
-    df_filtered = df_filtered[df_filtered["num_keypoints"] > 4]
+    # At least 6 keypoints (location in the upper limb specified later on)
+    df_filtered = df_filtered[df_filtered["num_keypoints"] > 5]
 
     return df_filtered
 
@@ -188,6 +188,7 @@ def filter_df_mac(df):
     """TBD"""
 
     df["kp"] = df.apply(lambda row: json.loads(row["keypoints"]), axis=1)
+    df = df.drop(["keypoints"], axis=1)
 
     # Single-animal only
     def is_multi_animal(row):
@@ -201,7 +202,7 @@ def filter_df_mac(df):
 
     df = df[mask]
 
-    # # At least 5 keypoints ?
+    # # At least 6 keypoints (location in the upper limb specified later on)
     # df_filtered = df_filtered[df_filtered["num_keypoints"] > 4]
 
     return df
@@ -243,12 +244,40 @@ def save_val_macaque(df):
     subset = [np.random.randint(0, max(df["index"]) + 1) for _ in range(0, 779)]
     df_val = df[df["index"].isin(subset)]
 
-    # Save to .h5 file
+    # Save LONG to .h5 file
     df_val.to_hdf("macaque_val.h5", key="df", mode="w")
+
+    # Create wide format for using DLC prediction functionality
+
+    df_val = df_val.rename({"position": "basescorer"}, axis=1).reset_index()
+    df_val[["x", "y"]] = pd.DataFrame(df_val["basescorer"].tolist(), index=df_val.index)
+    df_val = df_val.drop(["index", "level_0"], axis=1)
+    # Bodyparts in correct order such that preserved in final data
+    bps = ["nose", "left_eye", "right_eye", "left_ear", "right_ear", "left_shoulder", "right_shoulder", "left_elbow", \
+           "right_elbow", "left_wrist", "right_wrist", "left_hip", "right_hip", "left_knee", "right_knee",
+           "left_ankle", "right_ankle"]
+    # TODO: Do the same for COCO when transfer learning
+    df_val["bodyparts"] = pd.Categorical(df_val["bodyparts"], categories=bps, ordered=True)
+    df_val_wide = pd.pivot(data=df_val, index=["image file name"], columns=["bodyparts"], values=["x", "y"])
+    df_val_wide.columns = df_val_wide.columns.set_levels(df_val_wide.columns.levels[1].astype(object), level=1)
+
+    # Fix column index
+    df_val_wide = df_val_wide.swaplevel(0, 1, axis=1)
+    new_columns = pd.MultiIndex.from_product(
+        [["basescorer"], df_val_wide.columns.levels[0], df_val_wide.columns.levels[1]],
+        names=["scorer", "bodyparts", "coords"]
+    )
+    df_val_wide.columns = new_columns
+
+    # Fix row index
+    df_val_wide.index = df_val_wide.index.map(lambda img: "labeled-data/dummy-video/" + img)
+
+    # Save WIDE to .h5 file
+    df_val_wide.to_hdf("macaque_val_wide.h5", key="df", mode="w")
 
 
 if __name__ == "__main__":
-    dataset = "macaque"
+    dataset = "coco"
 
     if dataset == "coco":
         df_train, df_val = load_coco()
