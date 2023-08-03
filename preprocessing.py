@@ -1,11 +1,15 @@
 """
-COCO data preprocessing in order to be used as pre-labeled training data for DeepLabCut models.
-Large parts of the code were adapted from: https://github.com/robertklee/COCO-Human-Pose.git
+    Data preprocessing in order to be used as pre-labeled training data for DeepLabCut models.
+    Parts of COCO processing were adapted from: https://github.com/robertklee/COCO-Human-Pose.git
 """
+
+
 import json
 import numpy as np
 from pycocotools.coco import COCO
 import pandas as pd
+import random
+from scipy.spatial.distance import euclidean
 
 
 def get_meta(coco):
@@ -95,8 +99,8 @@ def filter_df_coco(df_org):
     dups = df_org["src_set_image_id"].duplicated(keep=False)
     df_filtered = df_org[~dups]
 
-    # At least 6 keypoints (location in the upper limb specified later on)
-    df_filtered = df_filtered[df_filtered["num_keypoints"] > 5]
+    # At least 5 keypoints (location in the upper limb specified in downstream functions)
+    df_filtered = df_filtered[df_filtered["num_keypoints"] > 4]
 
     return df_filtered
 
@@ -154,17 +158,17 @@ def save_coco(df_train, df_val, split_val):
     df_train.to_hdf("coco2017_train.h5", key="df", mode="w")
 
     if split_val:
-        """Request to split validation file, e.g. to hold out one half for downstream evaluation."""
+        # Split validation file, e.g. to hold out one half for downstream model evaluation
 
         df_val0 = df_val.sample(frac=0.5)
         df_val1 = df_val.drop(df_val0.index)
 
         df_val0.to_hdf("coco2017_val.h5", key="df", mode="w")
-        df_val1.to_hdf("coco2017_val-test.h5", key="df", mode="w")
+        df_val1.to_hdf("coco2017_val-test.h5", key="df", mode="w")  # hold-out test set
 
         return df_train, df_val0
     else:
-        df_val.to_hdf("coco2017_val.h5", key="df", mode="w")
+        df_val.to_hdf("coco2017_val-all.h5", key="df", mode="w")
 
         return df_train, df_val
 
@@ -178,15 +182,15 @@ def merge_coco_sets(df_train, df_val):
     df_train["istrain"] = [True for _ in range(len(df_train))]
     df_val["istrain"] = [False for _ in range(len(df_val))]
 
-    # Merge and sort DataFrame
+    # Merge, sort, and save DataFrame
     df_all = pd.concat([df_train, df_val]).sort_index()
-
-    df_all.to_hdf("coco2017_all.h5", key="df", mode="w")
+    df_all.to_hdf("coco2017_all.h5", key="df", mode="w")    # currently does NOT include the hold-out test split
 
 
 def filter_df_mac(df):
-    """TBD"""
+    """Filters the annotation Dataframe according to set requirements."""
 
+    # Leverage JSON formatting
     df["kp"] = df.apply(lambda row: json.loads(row["keypoints"]), axis=1)
     df = df.drop(["keypoints"], axis=1)
 
@@ -202,14 +206,11 @@ def filter_df_mac(df):
 
     df = df[mask]
 
-    # # At least 6 keypoints (location in the upper limb specified later on)
-    # df_filtered = df_filtered[df_filtered["num_keypoints"] > 4]
-
     return df
 
 
 def prepare_macaquepose_valset():
-    # TODO: Implement routine to get validation subset from MacaquePose annotations
+    """Step-by-step preprocessing after data loading."""
 
     # Load MacaquePose annotations and fix naming error
     df_all = pd.read_csv("annotations.csv")\
@@ -227,36 +228,45 @@ def prepare_macaquepose_valset():
     df["bodyparts"] = df.apply(lambda row: row["name"].replace(" ", "_"), axis=1)
     df = df.drop(["name"], axis=1)
 
-    # Coordinates into tuples
+    # Assemble coordinates into tuples
     df["position"] = df.apply(lambda row: tuple(row["position"]) if row["position"] is not None else (0, 0), axis=1)
 
-    # TODO: How to deal with non-present keypoints? (Right now make 0, but how evaluation?)
-
     return df
-    print("TBD")
 
 
 def save_val_macaque(df):
     """Save subset of MacaquePose to serve as validation set."""
 
-    # Create subset
-    np.random.seed(42)
-    subset = [np.random.randint(0, max(df["index"]) + 1) for _ in range(0, 779)]
-    df_val = df[df["index"].isin(subset)]
+    # Define subset
 
-    # Save LONG to .h5 file
+    if preserve_split:
+        # Just for now, ensure consistent splits through hardcoding
+        pred = pd.read_hdf("evaluation/DLC_resnet50_mrpbaseJul22shuffle1_1030000-snapshot-1030000_macaque.h5")
+        subset = []
+        for tup in pred.index.to_flat_index():
+            subset.append(tup[-1])
+
+        df_val = df[df["image file name"].isin(subset)]
+    else:
+        # TODO: Confirm this does generate consistent indices
+        np.random.seed(42)
+        subset = random.sample(list(df["index"].unique()), 779)    # make sure to sample without replacement
+        df_val = df[df["index"].isin(subset)]
+
+    # Save LONG data to .h5 file
     df_val.to_hdf("macaque_val.h5", key="df", mode="w")
 
     # Create wide format for using DLC prediction functionality
 
+    # Fix columns
     df_val = df_val.rename({"position": "basescorer"}, axis=1).reset_index()
     df_val[["x", "y"]] = pd.DataFrame(df_val["basescorer"].tolist(), index=df_val.index)
     df_val = df_val.drop(["index", "level_0"], axis=1)
-    # Bodyparts in correct order such that preserved in final data
+
+    # Ensure bodyparts in correct order such that preserved in final data
     bps = ["nose", "left_eye", "right_eye", "left_ear", "right_ear", "left_shoulder", "right_shoulder", "left_elbow", \
            "right_elbow", "left_wrist", "right_wrist", "left_hip", "right_hip", "left_knee", "right_knee",
            "left_ankle", "right_ankle"]
-    # TODO: Do the same for COCO when transfer learning
     df_val["bodyparts"] = pd.Categorical(df_val["bodyparts"], categories=bps, ordered=True)
     df_val_wide = pd.pivot(data=df_val, index=["image file name"], columns=["bodyparts"], values=["x", "y"])
     df_val_wide.columns = df_val_wide.columns.set_levels(df_val_wide.columns.levels[1].astype(object), level=1)
@@ -264,21 +274,87 @@ def save_val_macaque(df):
     # Fix column index
     df_val_wide = df_val_wide.swaplevel(0, 1, axis=1)
     new_columns = pd.MultiIndex.from_product(
-        [["basescorer"], df_val_wide.columns.levels[0], df_val_wide.columns.levels[1]],
-        names=["scorer", "bodyparts", "coords"]
+        [df_val_wide.columns.levels[0], df_val_wide.columns.levels[1]],
+        names=["bodyparts", "coords"]
     )
-    df_val_wide.columns = new_columns
+    df_val_wide = df_val_wide.reindex(columns=new_columns)
+    full_tuples = [("basescorer",) + item for item in df_val_wide.columns]
+    new_column_index = pd.MultiIndex.from_tuples(full_tuples, names=["scorer", "bodyparts", "coords"])
+    df_val_wide.columns = new_column_index
 
     # Fix row index
-    df_val_wide.index = df_val_wide.index.map(lambda img: "labeled-data/dummy-video/" + img)
+    df_val_wide.index = df_val_wide.index.map(lambda img: f"labeled-data/{video_name}/" + img)
 
-    # Save WIDE to .h5 file
+    # Save WIDE data to .h5 file
     df_val_wide.to_hdf("macaque_val_wide.h5", key="df", mode="w")
 
 
-if __name__ == "__main__":
-    dataset = "coco"
+def get_scaling_factors(df_wide, is_coco):
+    """Expects DataFrame with ground truth annotations for all keypoints, rows corresponding to images."""
 
+    # Discard images that do not have both full upper limbs
+    scorer_name = df_wide.columns.get_level_values(0).unique().to_list()[0]
+    df_wide = df_wide[
+        (df_wide[(scorer_name, "right_wrist", "x")] != 0.0) &
+        (df_wide[(scorer_name, "right_elbow", "x")] != 0.0) &
+        (df_wide[(scorer_name, "right_shoulder", "x")] != 0.0) &
+        (df_wide[(scorer_name, "left_wrist", "x")] != 0.0) &
+        (df_wide[(scorer_name, "left_elbow", "x")] != 0.0) &
+        (df_wide[(scorer_name, "left_shoulder", "x")] != 0.0) &
+        (df_wide[(scorer_name, "right_wrist", "y")] != 0.0) &
+        (df_wide[(scorer_name, "right_elbow", "y")] != 0.0) &
+        (df_wide[(scorer_name, "right_shoulder", "y")] != 0.0) &
+        (df_wide[(scorer_name, "left_wrist", "y")] != 0.0) &
+        (df_wide[(scorer_name, "left_elbow", "y")] != 0.0) &
+        (df_wide[(scorer_name, "left_shoulder", "y")] != 0.0)
+    ]
+    def upper_limb_centroid(row):
+        """
+            Calculates a proxy for the centroid of all upper limb keypoints.
+            Returns the mean distance to the proxy as a scaling factor for one image instance.
+        """
+
+        x_all = np.array([
+            row[(scorer_name, "right_wrist", "x")],
+            row[(scorer_name, "right_elbow", "x")],
+            row[(scorer_name, "right_shoulder", "x")],
+            row[(scorer_name, "left_wrist", "x")],
+            row[(scorer_name, "left_elbow", "x")],
+            row[(scorer_name, "left_shoulder", "x")],
+        ])
+        y_all = np.array([
+            row[(scorer_name, "right_wrist", "y")],
+            row[(scorer_name, "right_elbow", "y")],
+            row[(scorer_name, "right_shoulder", "y")],
+            row[(scorer_name, "left_wrist", "y")],
+            row[(scorer_name, "left_elbow", "y")],
+            row[(scorer_name, "left_shoulder", "y")],
+        ])
+        points = np.column_stack((x_all, y_all)).tolist()
+        cen_x = np.sum(x_all)/len(x_all)
+        cen_y = np.sum(y_all)/len(y_all)
+        centroid = [cen_x, cen_y]
+
+        d = []
+        for p in points:
+            d.append(euclidean(p, centroid))
+        mean_dist = np.mean(d)
+
+        return mean_dist
+
+    # Calculate list of scaling factors for each image
+    scaling_factors = df_wide.apply(
+        lambda row: upper_limb_centroid(row), axis=1
+    )
+
+    # Save scaling factors
+    if is_coco:
+        scaling_factors.to_hdf("scaling_coco_val.h5", key="df", mode="w")
+    else:
+        scaling_factors.to_hdf("scaling_macaque.h5", key="df", mode="w")
+
+
+def preprocess():
     if dataset == "coco":
         df_train, df_val = load_coco()
         df_train, df_val = prepare_coco(df_train, df_val)
@@ -288,4 +364,22 @@ if __name__ == "__main__":
         df = prepare_macaquepose_valset()
         save_val_macaque(df)
 
-    print("Preprocessing complete.")
+
+def generate_scaling_factors():
+    if dataset == "macaque":
+        data = pd.read_hdf("macaque_val_wide.h5")
+        get_scaling_factors(data, False)
+    elif dataset == "coco":
+        # TODO: add save option and repeat for COCO test set
+        data = pd.read_hdf("coco2017_val.h5")
+        get_scaling_factors(data, True)
+
+
+dataset = "coco"
+video_name = "dummy-video"
+preserve_split = True
+
+# preprocess()
+generate_scaling_factors()
+
+print("Preprocessing complete.")

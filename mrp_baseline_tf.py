@@ -7,21 +7,16 @@
 """
 
 
-import os
-# os.system('pip install deeplabcut[tf,modelzoo]')
 import deeplabcut as dlc
-import tensorflow as tf
 import os
 from pathlib import Path
 from datetime import date
-import pandas as pd
-import subprocess
 import datetime
-import argparse
 
-video_path = Path(os.getcwd() + "/dummy-video.mp4")
 
-# Ensure video file exists
+video_name = "dummy-video"          # name of .mp4 file (can be dummy)
+img_dir = "/../coco/val2017_subset" # name of folder with .jpg images
+video_path = Path(os.getcwd() + f"/{video_name}.mp4")
 assert video_path.is_file()
 
 today = date.today()
@@ -37,22 +32,22 @@ config_path, pose_config_path_it0 = dlc.create_pretrained_project(
     [video_path],
     videotype="mp4",
     model="full_macaque",
-    analyzevideo=False,         # if True: a labeled video is created, else only weights downloaded
-    createlabeledvideo=True,    # ? no documentation available
-    copy_videos=True,           # from Colab: must leave copy_videos=True (?)
+    analyzevideo=False,
+    createlabeledvideo=True,
+    copy_videos=True,           # from Colab: must leave copy_videos=True
 )
+
+# Assert correct config paths and contents
 print(f"Path to config.yaml: {config_path}")
 assert Path(config_path).is_file()
+directory = (os.getcwd() + img_dir)
+assert os.path.isdir(directory)
+dlc.auxiliaryfunctions.edit_config(config_path, {"batch_size": 1})
 
 print("~~~~~~~~~~~~~~~~~~~~~~~")
 print(f"{datetime.datetime.now().strftime('%Y-%m-%d [ %H:%M:%S ]')}")
 print(" Running model to create predictions ...")
 print("~~~~~~~~~~~~~~~~~~~~~~~")
-
-directory = (os.getcwd() + "/../coco/val2017_subset")
-assert os.path.isdir(directory)
-
-dlc.auxiliaryfunctions.edit_config(config_path, {"batch_size": 1})
 
 dlc.analyze_time_lapse_frames(
     config=config_path,
